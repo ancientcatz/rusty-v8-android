@@ -35,10 +35,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}-${{ inputs.v8_version }}
-
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build libclang-dev
@@ -74,6 +70,11 @@ jobs:
           [dependencies]
           v8 = "${{ inputs.v8_version }}"
           EOF
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v8-build
+          key: ${{ matrix.target }}-${{ inputs.v8_version }}
 
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
@@ -183,6 +184,7 @@ jobs:
 
   release:
     needs: build
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: write
