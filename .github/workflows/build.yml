@@ -1,0 +1,182 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      v8_version:
+        description: "rusty_v8 crate version (e.g. 130.0.7)"
+        required: true
+        default: "130.0.7"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+            lib_suffix: aarch64-linux-android
+          - target: x86_64-linux-android
+            os: ubuntu-latest
+            lib_suffix: x86_64-linux-android
+          - target: aarch64-apple-ios
+            os: macos-latest
+            lib_suffix: aarch64-apple-ios
+          - target: aarch64-apple-ios-sim
+            os: macos-latest
+            lib_suffix: aarch64-apple-ios-sim
+
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libclang-dev
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Download GN (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -sL -o /tmp/gn.zip "https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest"
+          mkdir -p /tmp/gn && cd /tmp/gn && unzip -o /tmp/gn.zip && chmod +x gn
+          echo "GN=/tmp/gn/gn" >> "$GITHUB_ENV"
+
+      - name: Download GN (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -sL -o /tmp/gn.zip "https://chrome-infra-packages.appspot.com/dl/gn/gn/mac-amd64/+/latest"
+          mkdir -p /tmp/gn && cd /tmp/gn && unzip -o /tmp/gn.zip && chmod +x gn
+          echo "GN=/tmp/gn/gn" >> "$GITHUB_ENV"
+
+      - name: Create build crate
+        run: |
+          mkdir -p v8-build/src
+          echo "fn main() {}" > v8-build/src/main.rs
+          cat > v8-build/Cargo.toml << 'EOF'
+          [package]
+          name = "v8-build"
+          version = "0.1.0"
+          edition = "2021"
+
+          [dependencies]
+          v8 = "${{ inputs.v8_version }}"
+          EOF
+
+      - name: Prepare Android NDK
+        if: contains(matrix.target, 'android')
+        run: |
+          cargo fetch --target ${{ matrix.target }} --manifest-path v8-build/Cargo.toml
+
+          V8_SRC=$(find ~/.cargo/registry/src -maxdepth 3 -name "build.rs" -path "*/v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
+          echo "V8_SRC=$V8_SRC" >> "$GITHUB_ENV"
+
+          # Download Android NDK r26c
+          NDK_DIR="$V8_SRC/third_party/android_ndk"
+          if [ ! -d "$NDK_DIR" ]; then
+            curl -L -o /tmp/ndk.zip https://dl.google.com/android/repository/android-ndk-r26c-linux.zip
+            unzip -q -d "$V8_SRC/third_party/" /tmp/ndk.zip
+            mv "$V8_SRC/third_party/android-ndk-r26c" "$NDK_DIR"
+            rm /tmp/ndk.zip
+          fi
+
+          # Symlink android_toolchain/ndk -> android_ndk
+          mkdir -p "$V8_SRC/third_party/android_toolchain"
+          ln -sf "$NDK_DIR" "$V8_SRC/third_party/android_toolchain/ndk"
+
+          # Create pydeps stubs
+          AB="$V8_SRC/build/android"
+          mkdir -p "$AB/pylib/results/presentation" "$AB/test_wrapper"
+          for f in devil_chromium.pydeps apk_operations.pydeps test_runner.pydeps resource_sizes.pydeps; do
+            touch "$AB/$f"
+          done
+          touch "$AB/pylib/results/presentation/test_results_presentation.pydeps"
+          touch "$AB/test_wrapper/logdog_wrapper.pydeps"
+
+          # Configure linker
+          LINKER="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          if [ "${{ matrix.target }}" = "x86_64-linux-android" ]; then
+            LINKER="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
+          fi
+          mkdir -p v8-build/.cargo
+          cat > v8-build/.cargo/config.toml << TOML
+          [target.${{ matrix.target }}]
+          linker = "$LINKER"
+          rustflags = ["-C", "link-args=-Wl,--allow-multiple-definition"]
+          TOML
+
+          # Bindgen args
+          NDK_SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          ARCH_INCLUDE="aarch64-linux-android"
+          if [ "${{ matrix.target }}" = "x86_64-linux-android" ]; then
+            ARCH_INCLUDE="x86_64-linux-android"
+          fi
+          echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+          BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
+          echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}26" >> "$GITHUB_ENV"
+
+      - name: Build V8 from source
+        env:
+          V8_FROM_SOURCE: "1"
+          NINJA: /usr/bin/ninja
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            export NINJA=$(which ninja)
+          fi
+          cd v8-build
+          cargo build --target ${{ matrix.target }} --release 2>&1 || true
+
+          # Android: retry after symlink fix (torque race condition)
+          if [ $? -ne 0 ] && echo "${{ matrix.target }}" | grep -q android; then
+            cargo build --target ${{ matrix.target }} --release
+          fi
+
+      - name: Extract and compress librusty_v8.a
+        run: |
+          LIB=$(find v8-build/target/${{ matrix.target }}/release -name "librusty_v8.a" | head -1)
+          if [ -z "$LIB" ]; then
+            echo "::error::librusty_v8.a not found"
+            exit 1
+          fi
+          OUTNAME="librusty_v8_release_${{ matrix.lib_suffix }}.a"
+          cp "$LIB" "$OUTNAME"
+          gzip -f "$OUTNAME"
+          ls -lh "${OUTNAME}.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: librusty_v8-${{ matrix.lib_suffix }}
+          path: "*.a.gz"
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - run: ls -lh *.a.gz
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.v8_version }}
+          name: "rusty_v8 v${{ inputs.v8_version }}"
+          body: |
+            Prebuilt `librusty_v8.a` for mobile targets, compiled from [rusty_v8 v${{ inputs.v8_version }}](https://github.com/denoland/rusty_v8/releases/tag/v${{ inputs.v8_version }}).
+
+            Usage:
+            ```bash
+            RUSTY_V8_ARCHIVE=/path/to/librusty_v8_release_<target>.a cargo build --target <target>
+            ```
+          files: "*.a.gz"
