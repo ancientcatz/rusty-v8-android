@@ -76,13 +76,22 @@ jobs:
           workspaces: v8-build
           key: ${{ matrix.target }}-${{ inputs.v8_version }}
 
-      # V8 gn_out 是编译产物的大头（几 GB），rust-cache 不包含它
+      # 缓存 V8 编译产物 + 外部依赖（rust-cache 不包含）
+      # - gn_out: ninja 编译产物（几 GB）
+      # - clang: Chromium 下载的 clang（~640MB）
+      # - android_ndk, android_platform, catapult: V8 build.rs 下载的依赖
+      # - build/linux: Linux sysroots
       - uses: actions/cache@v4
         with:
           path: |
             v8-build/target/${{ matrix.target }}/release/gn_out
             v8-build/target/${{ matrix.target }}/release/clang
-          key: v8-gn-out-${{ matrix.target }}-${{ inputs.v8_version }}
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_ndk
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_platform
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/catapult
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_toolchain
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/build/linux
+          key: v8-deps-${{ matrix.target }}-${{ inputs.v8_version }}
 
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
