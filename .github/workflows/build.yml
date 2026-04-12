@@ -199,19 +199,6 @@ jobs:
           # 把 aarch64 target 参数附加到 x86 命令上，导致 "-msse3 unsupported" 错误。
           # 上游 rusty_v8 CI 也不设这个。
 
-      - name: Prepare iOS bindgen args
-        if: contains(matrix.target, 'apple-ios')
-        run: |
-          BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
-          if [ "${{ matrix.target }}" = "aarch64-apple-ios-sim" ]; then
-            SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-            CLANG_TARGET="arm64-apple-ios${IOS_DEPLOYMENT_TARGET}-simulator"
-          else
-            SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-            CLANG_TARGET="arm64-apple-ios${IOS_DEPLOYMENT_TARGET}"
-          fi
-          echo "${BINDGEN_VAR}=-isysroot $SDK --target=$CLANG_TARGET" >> "$GITHUB_ENV"
-
       - name: Build V8 from source
         env:
           V8_FROM_SOURCE: "1"
