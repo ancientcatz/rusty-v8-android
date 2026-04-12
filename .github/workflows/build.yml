@@ -160,6 +160,24 @@ jobs:
           touch "$AB/pylib/results/presentation/test_results_presentation.pydeps"
           touch "$AB/test_wrapper/logdog_wrapper.pydeps"
 
+          # v8 140+ 需要 build/rust/known-target-triples.txt（rusty_v8 精简源码时漏了）
+          mkdir -p "$V8_SRC/build/rust"
+          cat > "$V8_SRC/build/rust/known-target-triples.txt" << 'TRIPLES'
+          aarch64-linux-android
+          armv7-linux-androideabi
+          x86_64-linux-android
+          i686-linux-android
+          aarch64-apple-ios
+          aarch64-apple-ios-sim
+          x86_64-apple-ios
+          aarch64-unknown-linux-gnu
+          x86_64-unknown-linux-gnu
+          aarch64-apple-darwin
+          x86_64-apple-darwin
+          x86_64-pc-windows-msvc
+          aarch64-pc-windows-msvc
+          TRIPLES
+
           # Configure linker
           LINKER="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
           if [ "${{ matrix.target }}" = "x86_64-linux-android" ]; then
