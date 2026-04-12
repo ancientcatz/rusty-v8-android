@@ -194,10 +194,40 @@ jobs:
           rustflags = ["-C", "link-args=-Wl,--allow-multiple-definition"]
           TOML
 
-          # 注意：不设 BINDGEN_EXTRA_CLANG_ARGS。V8 v140+ 内部 ninja 调 bindgen
-          # 生成 host 工具的 bindings，如果我们设这个 env var，会污染 host 调用
-          # 把 aarch64 target 参数附加到 x86 命令上，导致 "-msse3 unsupported" 错误。
-          # 上游 rusty_v8 CI 也不设这个。
+          # BINDGEN_EXTRA_CLANG_ARGS 的取舍：
+          # - v140+ 有 tools/get_bindgen_args.py 自己给 bindgen 配置参数，
+          #   我们设 env var 会污染 V8 内部 ninja 的 host bindgen 调用
+          #   （把 aarch64 target 附加到 x86 host 命令，导致 -msse3 unsupported）
+          # - v130-v139 没有这个脚本，build.rs 里的 bindgen 依赖外部 env var
+          #   找到 NDK sysroot 里的 C++ 头（cstdint 等）
+          # 以文件存在与否区分版本
+          if [ ! -f "$V8_SRC/tools/get_bindgen_args.py" ]; then
+            NDK_SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+            ARCH_INCLUDE="aarch64-linux-android"
+            if [ "${{ matrix.target }}" = "x86_64-linux-android" ]; then
+              ARCH_INCLUDE="x86_64-linux-android"
+            fi
+            echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+            BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
+            echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}${ANDROID_API_LEVEL}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Prepare iOS bindgen args (v130-v139 only)
+        if: contains(matrix.target, 'apple-ios')
+        run: |
+          V8_SRC="$GITHUB_WORKSPACE/rusty_v8-src"
+          # 和 Android 同样的逻辑：v140+ 不需要，v130-v139 需要
+          if [ ! -f "$V8_SRC/tools/get_bindgen_args.py" ]; then
+            if [ "${{ matrix.target }}" = "aarch64-apple-ios-sim" ]; then
+              SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+              CLANG_TARGET="arm64-apple-ios${IOS_DEPLOYMENT_TARGET}-simulator"
+            else
+              SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+              CLANG_TARGET="arm64-apple-ios${IOS_DEPLOYMENT_TARGET}"
+            fi
+            BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
+            echo "${BINDGEN_VAR}=-isysroot $SDK --target=$CLANG_TARGET" >> "$GITHUB_ENV"
+          fi
 
       - name: Build V8 from source
         env:
