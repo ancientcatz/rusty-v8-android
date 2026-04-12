@@ -42,6 +42,10 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # 用系统 git 做 fetch，cargo 会递归 fetch submodule
+      # （rusty_v8 v140+ 把 Chromium vendor 目录放在 submodule 里）
+      - run: echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> $GITHUB_ENV
+
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build libclang-dev
