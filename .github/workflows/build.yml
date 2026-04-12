@@ -81,7 +81,12 @@ jobs:
       # - clang: Chromium 下载的 clang（~640MB）
       # - android_ndk, android_platform, catapult: V8 build.rs 下载的依赖
       # - build/linux: Linux sysroots
-      - uses: actions/cache@v4
+      #
+      # Key 包含 V8 版本和 NDK 版本。升级 NDK 时把下面 ndk-r26c 改成新版本即可失效缓存。
+      # 用 restore + save 分离，save 用 if:always() 在 build 失败时也保存，
+      # 这样下次重试可以复用已下载/已编译的部分。
+      - uses: actions/cache/restore@v4
+        id: v8-cache
         with:
           path: |
             v8-build/target/${{ matrix.target }}/release/gn_out
@@ -91,8 +96,7 @@ jobs:
             ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/catapult
             ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_toolchain
             ~/.cargo/registry/src/index.crates.io-*/v8-*/build/linux
-          # 把 workflow 文件 hash 纳入 key：改 NDK 版本或下载 URL 时自动失效缓存
-          key: v8-deps-${{ matrix.target }}-${{ inputs.v8_version }}-${{ hashFiles('.github/workflows/build.yml') }}
+          key: v8-deps-${{ matrix.target }}-${{ inputs.v8_version }}-ndk-r26c
 
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
@@ -174,6 +178,20 @@ jobs:
           if [ $? -ne 0 ] && echo "${{ matrix.target }}" | grep -q android; then
             cargo build --target ${{ matrix.target }} --release
           fi
+
+      # 保存缓存——即使 build 失败也保存，这样下次重试能复用已完成的部分
+      - uses: actions/cache/save@v4
+        if: always() && steps.v8-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            v8-build/target/${{ matrix.target }}/release/gn_out
+            v8-build/target/${{ matrix.target }}/release/clang
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_ndk
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_platform
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/catapult
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_toolchain
+            ~/.cargo/registry/src/index.crates.io-*/v8-*/build/linux
+          key: v8-deps-${{ matrix.target }}-${{ inputs.v8_version }}-ndk-r26c
 
       - name: Extract artifacts
         run: |
