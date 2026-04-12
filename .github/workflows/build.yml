@@ -128,6 +128,19 @@ jobs:
           BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
           echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}26" >> "$GITHUB_ENV"
 
+      - name: Prepare iOS bindgen args
+        if: contains(matrix.target, 'apple-ios')
+        run: |
+          BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
+          if [ "${{ matrix.target }}" = "aarch64-apple-ios-sim" ]; then
+            SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+            CLANG_TARGET="arm64-apple-ios13.0-simulator"
+          else
+            SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+            CLANG_TARGET="arm64-apple-ios13.0"
+          fi
+          echo "${BINDGEN_VAR}=-isysroot $SDK --target=$CLANG_TARGET" >> "$GITHUB_ENV"
+
       - name: Build V8 from source
         env:
           V8_FROM_SOURCE: "1"
@@ -184,7 +197,6 @@ jobs:
 
   release:
     needs: build
-    if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: write
