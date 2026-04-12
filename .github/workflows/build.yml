@@ -75,8 +75,16 @@ jobs:
           edition = "2021"
 
           [dependencies]
-          v8 = "${{ inputs.v8_version }}"
+          v8 = "=${{ inputs.v8_version }}"
           EOF
+
+          # 使用 rusty_v8 官方 Cargo.lock，避免 transitive 依赖（如 icu_calendar）
+          # 拉到不兼容的新版本。官方 release 的 Cargo.lock 是验证过能跑的组合。
+          if curl -sL --fail -o v8-build/Cargo.lock "https://raw.githubusercontent.com/denoland/rusty_v8/v${{ inputs.v8_version }}/Cargo.lock"; then
+            echo "Downloaded Cargo.lock from rusty_v8 v${{ inputs.v8_version }}"
+          else
+            echo "::warning::Cargo.lock not available for v${{ inputs.v8_version }}, cargo will resolve on its own"
+          fi
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -120,7 +128,9 @@ jobs:
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
         run: |
-          cargo fetch --target ${{ matrix.target }} --manifest-path v8-build/Cargo.toml
+          FETCH_ARGS=""
+          if [ -f v8-build/Cargo.lock ]; then FETCH_ARGS="--locked"; fi
+          cargo fetch $FETCH_ARGS --target ${{ matrix.target }} --manifest-path v8-build/Cargo.toml
 
           V8_SRC=$(find ~/.cargo/registry/src -maxdepth 3 -name "build.rs" -path "*/v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
           echo "V8_SRC=$V8_SRC" >> "$GITHUB_ENV"
@@ -195,11 +205,17 @@ jobs:
             export NINJA=$(which ninja)
           fi
           cd v8-build
-          cargo build --target ${{ matrix.target }} --release 2>&1 || true
+          # 优先用锁定版本；没有 Cargo.lock 就正常 resolve
+          if [ -f Cargo.lock ]; then
+            BUILD_ARGS="--locked"
+          else
+            BUILD_ARGS=""
+          fi
+          cargo build $BUILD_ARGS --target ${{ matrix.target }} --release 2>&1 || true
 
           # Android: retry after symlink fix (torque race condition)
           if [ $? -ne 0 ] && echo "${{ matrix.target }}" | grep -q android; then
-            cargo build --target ${{ matrix.target }} --release
+            cargo build $BUILD_ARGS --target ${{ matrix.target }} --release
           fi
 
       # 保存 NDK 缓存（跨 V8 版本复用）
