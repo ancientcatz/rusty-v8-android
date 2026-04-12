@@ -66,6 +66,9 @@ jobs:
 
       - name: Create build crate
         run: |
+          # 从 GitHub tag 直接依赖 rusty_v8 源码。
+          # crates.io 上的 v8 crate 是精简版（cargo publish 裁剪了大文件和 Chromium vendor 目录），
+          # 只适合配合预编译 .a 使用。V8_FROM_SOURCE 需要完整源码。
           mkdir -p v8-build/src
           echo "fn main() {}" > v8-build/src/main.rs
           cat > v8-build/Cargo.toml << 'EOF'
@@ -75,16 +78,15 @@ jobs:
           edition = "2021"
 
           [dependencies]
-          v8 = "=${{ inputs.v8_version }}"
+          v8 = { git = "https://github.com/denoland/rusty_v8", tag = "v${{ inputs.v8_version }}" }
           EOF
 
-          # 使用 rusty_v8 官方 Cargo.lock 作为种子。cargo 会保留其中我们需要的版本选择
-          # （如 temporal_rs / icu_calendar 等 transitive 依赖），避免自动 resolve 到不兼容的版本。
-          # 不加 --locked：我们的 v8-build crate 和 rusty_v8 workspace 不同，cargo 需要更新 lock file 补充 entry。
+          # 下载上游 Cargo.lock 作为种子，避免 transitive 依赖（icu_calendar 等）
+          # 被 cargo 自动 resolve 到不兼容的新版本
           if curl -sL --fail -o v8-build/Cargo.lock "https://raw.githubusercontent.com/denoland/rusty_v8/v${{ inputs.v8_version }}/Cargo.lock"; then
             echo "Downloaded Cargo.lock from rusty_v8 v${{ inputs.v8_version }}"
           else
-            echo "::warning::Cargo.lock not available for v${{ inputs.v8_version }}, cargo will resolve on its own"
+            echo "::warning::Cargo.lock not available for v${{ inputs.v8_version }}"
           fi
 
       - uses: Swatinem/rust-cache@v2
@@ -120,9 +122,9 @@ jobs:
           path: |
             v8-build/target/${{ matrix.target }}/release/gn_out
             v8-build/target/${{ matrix.target }}/release/clang
-            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_platform
-            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/catapult
-            ~/.cargo/registry/src/index.crates.io-*/v8-*/build/linux
+            ~/.cargo/git/checkouts/rusty_v8-*/*/third_party/android_platform
+            ~/.cargo/git/checkouts/rusty_v8-*/*/third_party/catapult
+            ~/.cargo/git/checkouts/rusty_v8-*/*/build/linux
           # Android key 绑 API level；iOS key 绑 iOS deployment target
           key: ${{ contains(matrix.target, 'android') && format('v8-deps-{0}-v{1}-api{2}', matrix.target, inputs.v8_version, env.ANDROID_API_LEVEL) || format('v8-deps-{0}-v{1}-ios{2}', matrix.target, inputs.v8_version, env.IOS_DEPLOYMENT_TARGET) }}
 
@@ -131,7 +133,12 @@ jobs:
         run: |
           cargo fetch --target ${{ matrix.target }} --manifest-path v8-build/Cargo.toml
 
-          V8_SRC=$(find ~/.cargo/registry/src -maxdepth 3 -name "build.rs" -path "*/v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
+          # 找 git 依赖的 rusty_v8 源码位置
+          V8_SRC=$(find ~/.cargo/git/checkouts -maxdepth 3 -name "build.rs" -path "*/rusty_v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
+          if [ -z "$V8_SRC" ]; then
+            # 回退到 registry src（如果用的是 crates.io 版本）
+            V8_SRC=$(find ~/.cargo/registry/src -maxdepth 3 -name "build.rs" -path "*/v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
+          fi
           echo "V8_SRC=$V8_SRC" >> "$GITHUB_ENV"
 
           # NDK 存在独立路径（/tmp/android-ndk-<version>），V8 里用 symlink 引用
@@ -243,9 +250,9 @@ jobs:
           path: |
             v8-build/target/${{ matrix.target }}/release/gn_out
             v8-build/target/${{ matrix.target }}/release/clang
-            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_platform
-            ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/catapult
-            ~/.cargo/registry/src/index.crates.io-*/v8-*/build/linux
+            ~/.cargo/git/checkouts/rusty_v8-*/*/third_party/android_platform
+            ~/.cargo/git/checkouts/rusty_v8-*/*/third_party/catapult
+            ~/.cargo/git/checkouts/rusty_v8-*/*/build/linux
           key: ${{ contains(matrix.target, 'android') && format('v8-deps-{0}-v{1}-api{2}', matrix.target, inputs.v8_version, env.ANDROID_API_LEVEL) || format('v8-deps-{0}-v{1}-ios{2}', matrix.target, inputs.v8_version, env.IOS_DEPLOYMENT_TARGET) }}
 
       - name: Extract artifacts
