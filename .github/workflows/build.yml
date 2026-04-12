@@ -30,6 +30,13 @@ jobs:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
+
+    env:
+      # 所有影响构建产物的外部版本号集中在这里。改动会通过 cache key 失效缓存。
+      NDK_VERSION: r26c
+      ANDROID_API_LEVEL: "26"
+      IOS_DEPLOYMENT_TARGET: "13.0"
+
     steps:
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -82,7 +89,7 @@ jobs:
       # - android_ndk, android_platform, catapult: V8 build.rs 下载的依赖
       # - build/linux: Linux sysroots
       #
-      # Key 包含 V8 版本和 NDK 版本。升级 NDK 时把下面 ndk-r26c 改成新版本即可失效缓存。
+      # Key 由 env 里所有版本变量组成。改动任一版本会失效对应缓存。
       # 用 restore + save 分离，save 用 if:always() 在 build 失败时也保存，
       # 这样下次重试可以复用已下载/已编译的部分。
       - uses: actions/cache/restore@v4
@@ -96,7 +103,8 @@ jobs:
             ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/catapult
             ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_toolchain
             ~/.cargo/registry/src/index.crates.io-*/v8-*/build/linux
-          key: v8-deps-${{ matrix.target }}-${{ inputs.v8_version }}-ndk-r26c
+          # Android key 绑 NDK + API level；iOS key 绑 iOS deployment target
+          key: ${{ contains(matrix.target, 'android') && format('v8-deps-{0}-v{1}-ndk{2}-api{3}', matrix.target, inputs.v8_version, env.NDK_VERSION, env.ANDROID_API_LEVEL) || format('v8-deps-{0}-v{1}-ios{2}', matrix.target, inputs.v8_version, env.IOS_DEPLOYMENT_TARGET) }}
 
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
@@ -106,12 +114,12 @@ jobs:
           V8_SRC=$(find ~/.cargo/registry/src -maxdepth 3 -name "build.rs" -path "*/v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
           echo "V8_SRC=$V8_SRC" >> "$GITHUB_ENV"
 
-          # Download Android NDK r26c
+          # Download Android NDK ${{ env.NDK_VERSION }}
           NDK_DIR="$V8_SRC/third_party/android_ndk"
           if [ ! -d "$NDK_DIR" ]; then
-            curl -L -o /tmp/ndk.zip https://dl.google.com/android/repository/android-ndk-r26c-linux.zip
+            curl -L -o /tmp/ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
             unzip -q -d "$V8_SRC/third_party/" /tmp/ndk.zip
-            mv "$V8_SRC/third_party/android-ndk-r26c" "$NDK_DIR"
+            mv "$V8_SRC/third_party/android-ndk-${NDK_VERSION}" "$NDK_DIR"
             rm /tmp/ndk.zip
           fi
 
@@ -129,9 +137,9 @@ jobs:
           touch "$AB/test_wrapper/logdog_wrapper.pydeps"
 
           # Configure linker
-          LINKER="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+          LINKER="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
           if [ "${{ matrix.target }}" = "x86_64-linux-android" ]; then
-            LINKER="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
+            LINKER="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android${ANDROID_API_LEVEL}-clang"
           fi
           mkdir -p v8-build/.cargo
           cat > v8-build/.cargo/config.toml << TOML
@@ -148,7 +156,7 @@ jobs:
           fi
           echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
           BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
-          echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}26" >> "$GITHUB_ENV"
+          echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}${ANDROID_API_LEVEL}" >> "$GITHUB_ENV"
 
       - name: Prepare iOS bindgen args
         if: contains(matrix.target, 'apple-ios')
@@ -156,10 +164,10 @@ jobs:
           BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
           if [ "${{ matrix.target }}" = "aarch64-apple-ios-sim" ]; then
             SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-            CLANG_TARGET="arm64-apple-ios13.0-simulator"
+            CLANG_TARGET="arm64-apple-ios${IOS_DEPLOYMENT_TARGET}-simulator"
           else
             SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-            CLANG_TARGET="arm64-apple-ios13.0"
+            CLANG_TARGET="arm64-apple-ios${IOS_DEPLOYMENT_TARGET}"
           fi
           echo "${BINDGEN_VAR}=-isysroot $SDK --target=$CLANG_TARGET" >> "$GITHUB_ENV"
 
@@ -191,7 +199,8 @@ jobs:
             ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/catapult
             ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_toolchain
             ~/.cargo/registry/src/index.crates.io-*/v8-*/build/linux
-          key: v8-deps-${{ matrix.target }}-${{ inputs.v8_version }}-ndk-r26c
+          # Android key 绑 NDK + API level；iOS key 绑 iOS deployment target
+          key: ${{ contains(matrix.target, 'android') && format('v8-deps-{0}-v{1}-ndk{2}-api{3}', matrix.target, inputs.v8_version, env.NDK_VERSION, env.ANDROID_API_LEVEL) || format('v8-deps-{0}-v{1}-ios{2}', matrix.target, inputs.v8_version, env.IOS_DEPLOYMENT_TARGET) }}
 
       - name: Extract artifacts
         run: |
