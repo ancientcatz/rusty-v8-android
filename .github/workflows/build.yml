@@ -65,11 +65,30 @@ jobs:
           mkdir -p /tmp/gn && cd /tmp/gn && unzip -o /tmp/gn.zip && chmod +x gn
           echo "GN=/tmp/gn/gn" >> "$GITHUB_ENV"
 
+      # rusty_v8 源码缓存（按 V8 版本，跨 target 共享）
+      # 包括 actions/checkout 拉的源码+submodules，以及 build.rs 往里放的 android_platform/catapult/build/linux
+      - uses: actions/cache/restore@v4
+        id: src-cache
+        with:
+          path: rusty_v8-src
+          key: rusty-v8-src-v${{ inputs.v8_version }}
+
+      # rusty_v8 源码：用 actions/checkout（GitHub 原生，对 chromium.googlesource.com
+      # submodule 的支持比 cargo 的内置 git lib 更稳定，macOS 上尤其如此）。
+      # clean: false 保留 build.rs 往 checkout 里放的未追踪文件（android_platform 等）
+      - name: Checkout rusty_v8 source
+        if: steps.src-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: denoland/rusty_v8
+          ref: v${{ inputs.v8_version }}
+          submodules: recursive
+          path: rusty_v8-src
+          clean: false
+
       - name: Create build crate
         run: |
-          # 从 GitHub tag 直接依赖 rusty_v8 源码。
-          # crates.io 上的 v8 crate 是精简版（cargo publish 裁剪了大文件和 Chromium vendor 目录），
-          # 只适合配合预编译 .a 使用。V8_FROM_SOURCE 需要完整源码。
+          # v8-build 是一个 wrapper crate，通过 path 依赖引用本地 rusty_v8 源码
           mkdir -p v8-build/src
           echo "fn main() {}" > v8-build/src/main.rs
           cat > v8-build/Cargo.toml << 'EOF'
@@ -79,15 +98,13 @@ jobs:
           edition = "2021"
 
           [dependencies]
-          v8 = { git = "https://github.com/denoland/rusty_v8", tag = "v${{ inputs.v8_version }}" }
+          v8 = { path = "../rusty_v8-src" }
           EOF
 
-          # 下载上游 Cargo.lock 作为种子，避免 transitive 依赖（icu_calendar 等）
+          # 拷贝 rusty_v8 的 Cargo.lock 作为种子，避免 transitive 依赖（icu_calendar 等）
           # 被 cargo 自动 resolve 到不兼容的新版本
-          if curl -sL --fail -o v8-build/Cargo.lock "https://raw.githubusercontent.com/denoland/rusty_v8/v${{ inputs.v8_version }}/Cargo.lock"; then
-            echo "Downloaded Cargo.lock from rusty_v8 v${{ inputs.v8_version }}"
-          else
-            echo "::warning::Cargo.lock not available for v${{ inputs.v8_version }}"
+          if [ -f rusty_v8-src/Cargo.lock ]; then
+            cp rusty_v8-src/Cargo.lock v8-build/Cargo.lock
           fi
 
       - uses: Swatinem/rust-cache@v2
@@ -95,36 +112,13 @@ jobs:
           workspaces: v8-build
           key: ${{ matrix.target }}-${{ inputs.v8_version }}
 
-      # 缓存 V8 编译产物 + 外部依赖（rust-cache 不包含）
-      # - gn_out: ninja 编译产物（几 GB）
-      # - clang: Chromium 下载的 clang（~640MB）
-      # - android_ndk, android_platform, catapult: V8 build.rs 下载的依赖
-      # - build/linux: Linux sysroots
-      #
-      # Key 由 env 里所有版本变量组成。改动任一版本会失效对应缓存。
-      # 用 restore + save 分离，save 用 if:always() 在 build 失败时也保存，
-      # 这样下次重试可以复用已下载/已编译的部分。
-      # NDK 缓存（跨 V8 版本复用，存到独立路径）
+      # NDK 缓存（跨 V8 版本复用，存到独立路径；只在 Android 目标用，runner 固定 Linux）
       - uses: actions/cache/restore@v4
         id: ndk-cache
         if: contains(matrix.target, 'android')
         with:
           path: /tmp/android-ndk-${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}
-
-      # rusty_v8 git checkout 缓存（按 V8 版本，跨 target/OS 共享）
-      # 覆盖 rusty_v8 源码、submodules、以及 build.rs 往 checkout 里放的东西
-      #（android_platform/catapult 都是 clone 到这里面的；build/linux sysroots 也是）
-      # restore-keys 让 db 跨版本复用，新版本只做增量 fetch
-      - uses: actions/cache/restore@v4
-        id: git-cache
-        with:
-          path: |
-            ~/.cargo/git/checkouts/rusty_v8-*
-            ~/.cargo/git/db/rusty_v8-*
-          key: rusty-v8-git-v${{ inputs.v8_version }}
-          restore-keys: |
-            rusty-v8-git-
 
       # V8 编译产物（target + V8 版本专属，host OS 隐含在 matrix.target 里）
       # - gn_out: ninja 编译产物（几 GB，含 host 和 target 的 .o/.a）
@@ -141,14 +135,7 @@ jobs:
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
         run: |
-          cargo fetch --target ${{ matrix.target }} --manifest-path v8-build/Cargo.toml
-
-          # 找 git 依赖的 rusty_v8 源码位置
-          V8_SRC=$(find ~/.cargo/git/checkouts -maxdepth 3 -name "build.rs" -path "*/rusty_v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
-          if [ -z "$V8_SRC" ]; then
-            # 回退到 registry src（如果用的是 crates.io 版本）
-            V8_SRC=$(find ~/.cargo/registry/src -maxdepth 3 -name "build.rs" -path "*/v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
-          fi
+          V8_SRC="$GITHUB_WORKSPACE/rusty_v8-src"
           echo "V8_SRC=$V8_SRC" >> "$GITHUB_ENV"
 
           # NDK 存在独立路径（/tmp/android-ndk-<version>），V8 里用 symlink 引用
@@ -243,15 +230,13 @@ jobs:
           path: /tmp/android-ndk-${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}
 
-      # 保存 rusty_v8 git checkout（save 时 path 抓当前所有文件，
-      # 包括 build.rs 放进来的 android_platform/catapult/build/linux 等）
+      # 保存 rusty_v8-src（save 抓整个目录，包括 build.rs 放进来的
+      # android_platform/catapult/build/linux 等未追踪文件）
       - uses: actions/cache/save@v4
-        if: always() && steps.git-cache.outputs.cache-hit != 'true'
+        if: always() && steps.src-cache.outputs.cache-hit != 'true'
         with:
-          path: |
-            ~/.cargo/git/checkouts/rusty_v8-*
-            ~/.cargo/git/db/rusty_v8-*
-          key: rusty-v8-git-v${{ inputs.v8_version }}
+          path: rusty_v8-src
+          key: rusty-v8-src-v${{ inputs.v8_version }}
 
       # 保存 V8 编译产物——即使 build 失败也保存，下次重试可以复用已完成的部分
       - uses: actions/cache/save@v4
