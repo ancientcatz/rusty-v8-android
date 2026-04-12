@@ -91,7 +91,8 @@ jobs:
             ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/catapult
             ~/.cargo/registry/src/index.crates.io-*/v8-*/third_party/android_toolchain
             ~/.cargo/registry/src/index.crates.io-*/v8-*/build/linux
-          key: v8-deps-${{ matrix.target }}-${{ inputs.v8_version }}
+          # 把 workflow 文件 hash 纳入 key：改 NDK 版本或下载 URL 时自动失效缓存
+          key: v8-deps-${{ matrix.target }}-${{ inputs.v8_version }}-${{ hashFiles('.github/workflows/build.yml') }}
 
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
