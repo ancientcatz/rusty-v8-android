@@ -225,12 +225,7 @@ jobs:
             export NINJA=$(which ninja)
           fi
           cd v8-build
-          cargo build --target ${{ matrix.target }} --release 2>&1 || true
-
-          # Android: retry after symlink fix (torque race condition)
-          if [ $? -ne 0 ] && echo "${{ matrix.target }}" | grep -q android; then
-            cargo build --target ${{ matrix.target }} --release
-          fi
+          cargo build --target ${{ matrix.target }} --release
 
       # 保存 NDK 缓存（跨 V8 版本复用）
       - uses: actions/cache/save@v4
