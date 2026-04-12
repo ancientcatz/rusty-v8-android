@@ -43,10 +43,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # 用系统 git 做 fetch，cargo 会递归 fetch submodule
-      # （rusty_v8 v140+ 把 Chromium vendor 目录放在 submodule 里）
-      - run: echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> $GITHUB_ENV
-
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build libclang-dev
@@ -202,15 +198,10 @@ jobs:
           rustflags = ["-C", "link-args=-Wl,--allow-multiple-definition"]
           TOML
 
-          # Bindgen args
-          NDK_SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-          ARCH_INCLUDE="aarch64-linux-android"
-          if [ "${{ matrix.target }}" = "x86_64-linux-android" ]; then
-            ARCH_INCLUDE="x86_64-linux-android"
-          fi
-          echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
-          BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
-          echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}${ANDROID_API_LEVEL}" >> "$GITHUB_ENV"
+          # 注意：不设 BINDGEN_EXTRA_CLANG_ARGS。V8 v140+ 内部 ninja 调 bindgen
+          # 生成 host 工具的 bindings，如果我们设这个 env var，会污染 host 调用
+          # 把 aarch64 target 参数附加到 x86 命令上，导致 "-msse3 unsupported" 错误。
+          # 上游 rusty_v8 CI 也不设这个。
 
       - name: Prepare iOS bindgen args
         if: contains(matrix.target, 'apple-ios')
