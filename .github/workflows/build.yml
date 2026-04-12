@@ -11,7 +11,8 @@ on:
 jobs:
   build:
     strategy:
-      fail-fast: false
+      # 一个 target 失败就取消其他——反正要重跑，省时间
+      fail-fast: true
       matrix:
         include:
           - target: aarch64-linux-android
