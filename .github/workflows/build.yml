@@ -202,26 +202,27 @@ jobs:
           TOML
 
           # bindgen clang 配置：v130 和 v140+ 处理方式不同
-          # - v130-v139：没有 V8 internal Rust build，设 BINDGEN_EXTRA_CLANG_ARGS
-          #   覆盖 crate bindgen 的 sysroot/target（内部无 bindgen 可污染）
-          # - v140+：有 V8 internal ninja bindgen，设 env var 会污染其 host 调用。
-          #   改用 LIBCLANG_PATH 指向 NDK 自带的 libclang（它知道 Android sysroot 位置），
-          #   V8 internal bindgen 用 --libclang-path CLI 参数指定自己的 libclang，
-          #   不读 LIBCLANG_PATH env，互不干扰。
+          # - v130-v139：只有 rusty_v8 build.rs 顶层 bindgen，env var 带 --target
+          # - v140+：V8 internal ninja bindgen 和 rusty_v8 顶层 bindgen 都在同一 cargo build 里
+          #   env var 带 --target 会覆盖 V8 internal host 调用的 --target=x86_64-linux-gnu，
+          #   造成 -msse3 错误。所以只传 --sysroot + -isystem，不带 --target
+          #   （bindgen crate 会从 TARGET 自动推出 target；V8 internal CLI 保留自己的 --target）
           NDK_LIB="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/lib"
+          NDK_SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          ARCH_INCLUDE="aarch64-linux-android"
+          if [ "${{ matrix.target }}" = "x86_64-linux-android" ]; then
+            ARCH_INCLUDE="x86_64-linux-android"
+          fi
+          BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
+          BINDGEN_ARGS="--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE"
           if [ ! -f "$V8_SRC/tools/rust_toolchain.py" ]; then
-            # v130-v139: 外部 env var 模式
-            NDK_SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-            ARCH_INCLUDE="aarch64-linux-android"
-            if [ "${{ matrix.target }}" = "x86_64-linux-android" ]; then
-              ARCH_INCLUDE="x86_64-linux-android"
-            fi
+            # v130-v139: 带 --target
             echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
-            BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
-            echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}${ANDROID_API_LEVEL}" >> "$GITHUB_ENV"
+            echo "${BINDGEN_VAR}=$BINDGEN_ARGS --target=${{ matrix.target }}${ANDROID_API_LEVEL}" >> "$GITHUB_ENV"
           else
-            # v140+: NDK libclang 模式
+            # v140+: NDK libclang + 不带 --target 的 env var
             echo "LIBCLANG_PATH=$NDK_LIB" >> "$GITHUB_ENV"
+            echo "${BINDGEN_VAR}=$BINDGEN_ARGS" >> "$GITHUB_ENV"
           fi
 
       - name: Prepare iOS bindgen args (v130-v139 only)
