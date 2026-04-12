@@ -78,8 +78,9 @@ jobs:
           v8 = "=${{ inputs.v8_version }}"
           EOF
 
-          # 使用 rusty_v8 官方 Cargo.lock，避免 transitive 依赖（如 icu_calendar）
-          # 拉到不兼容的新版本。官方 release 的 Cargo.lock 是验证过能跑的组合。
+          # 使用 rusty_v8 官方 Cargo.lock 作为种子。cargo 会保留其中我们需要的版本选择
+          # （如 temporal_rs / icu_calendar 等 transitive 依赖），避免自动 resolve 到不兼容的版本。
+          # 不加 --locked：我们的 v8-build crate 和 rusty_v8 workspace 不同，cargo 需要更新 lock file 补充 entry。
           if curl -sL --fail -o v8-build/Cargo.lock "https://raw.githubusercontent.com/denoland/rusty_v8/v${{ inputs.v8_version }}/Cargo.lock"; then
             echo "Downloaded Cargo.lock from rusty_v8 v${{ inputs.v8_version }}"
           else
@@ -128,9 +129,7 @@ jobs:
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
         run: |
-          FETCH_ARGS=""
-          if [ -f v8-build/Cargo.lock ]; then FETCH_ARGS="--locked"; fi
-          cargo fetch $FETCH_ARGS --target ${{ matrix.target }} --manifest-path v8-build/Cargo.toml
+          cargo fetch --target ${{ matrix.target }} --manifest-path v8-build/Cargo.toml
 
           V8_SRC=$(find ~/.cargo/registry/src -maxdepth 3 -name "build.rs" -path "*/v8-*/*" -printf "%h\n" 2>/dev/null | head -1)
           echo "V8_SRC=$V8_SRC" >> "$GITHUB_ENV"
@@ -205,17 +204,11 @@ jobs:
             export NINJA=$(which ninja)
           fi
           cd v8-build
-          # 优先用锁定版本；没有 Cargo.lock 就正常 resolve
-          if [ -f Cargo.lock ]; then
-            BUILD_ARGS="--locked"
-          else
-            BUILD_ARGS=""
-          fi
-          cargo build $BUILD_ARGS --target ${{ matrix.target }} --release 2>&1 || true
+          cargo build --target ${{ matrix.target }} --release 2>&1 || true
 
           # Android: retry after symlink fix (torque race condition)
           if [ $? -ne 0 ] && echo "${{ matrix.target }}" | grep -q android; then
-            cargo build $BUILD_ARGS --target ${{ matrix.target }} --release
+            cargo build --target ${{ matrix.target }} --release
           fi
 
       # 保存 NDK 缓存（跨 V8 版本复用）
