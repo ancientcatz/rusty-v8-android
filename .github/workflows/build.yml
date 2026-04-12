@@ -229,6 +229,15 @@ jobs:
             echo "${BINDGEN_VAR}=-isysroot $SDK --target=$CLANG_TARGET" >> "$GITHUB_ENV"
           fi
 
+      - name: Debug rust-toolchain state
+        run: |
+          echo "=== rust-toolchain dir ==="
+          ls -la rusty_v8-src/third_party/rust-toolchain 2>&1 || echo "not exist"
+          echo "=== rust submodule ==="
+          ls rusty_v8-src/third_party/rust 2>&1 | head -20
+          echo "=== bin/rustc (if any) ==="
+          file rusty_v8-src/third_party/rust-toolchain/bin/rustc 2>&1 || echo "not exist"
+
       - name: Build V8 from source
         env:
           V8_FROM_SOURCE: "1"
