@@ -18,41 +18,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Find oldest missing upstream version
+      - name: Find upstream versions newer than our latest
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 拉 denoland/rusty_v8 最近 20 个 release
+          # 只追"比我们最新 release 更新"的版本——老的已经有意跳过的不追溯。
+          # V8 正常 ~6 周一版，每天 cron 检查一次最多新增 0-1 个版本。
           UPSTREAM=$(gh api repos/denoland/rusty_v8/releases --jq '.[0:20] | .[].tag_name' | sed 's/^v//')
-
-          # 本 repo 已 release 的版本
           OURS=$(gh api repos/${{ github.repository }}/releases --jq '.[].tag_name' | sed 's/^v//')
 
-          # 挑最老的一个 missing（按升序拿第一个）——每天 cron 触发一次，
-          # 一次一个版本避免 macOS runner 排队。追上 20 个版本要 20 天，
-          # 但 V8 正常每 ~6 周发一版，日追追得上。
-          # 用户需要快速补齐历史时手工 workflow_dispatch build.yml。
-          MISSING=""
+          MAX_OURS=$(echo "$OURS" | sort -V | tail -1)
+          if [ -z "$MAX_OURS" ]; then
+            echo "::error::no existing releases — can't determine cutoff"
+            exit 1
+          fi
+          echo "Our latest: v$MAX_OURS"
+
+          # sort -V 语义化升序，$ver > $MAX_OURS 就是新版本
+          NEW=""
           for ver in $(echo "$UPSTREAM" | sort -V); do
-            if ! echo "$OURS" | grep -qx "$ver"; then
-              MISSING="$ver"
-              break
+            if [ "$(printf '%s\n%s\n' "$MAX_OURS" "$ver" | sort -V | tail -1)" = "$ver" ] \
+               && [ "$ver" != "$MAX_OURS" ]; then
+              NEW="$NEW $ver"
             fi
           done
-
-          echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
-          if [ -n "$MISSING" ]; then
-            echo "Oldest missing: v$MISSING"
+          NEW=$(echo "$NEW" | xargs)
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          if [ -n "$NEW" ]; then
+            echo "Newer than v$MAX_OURS: $NEW"
           else
             echo "All up to date"
           fi
 
-      - name: Trigger build for that version
-        if: steps.check.outputs.missing != ''
+      - name: Trigger builds for newer versions
+        if: steps.check.outputs.new != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ver="${{ steps.check.outputs.missing }}"
-          echo "Triggering build for v$ver..."
-          gh workflow run build.yml -f v8_version="$ver"
+          # 按升序逐个触发——一天通常 0-1 个新版本，哪怕积了几个（假期没
+          # 跑之类）也都按顺序排入 matrix 队列，GitHub 自己会 macOS 并发限流
+          for ver in ${{ steps.check.outputs.new }}; do
+            echo "Triggering build for v$ver..."
+            gh workflow run build.yml -f v8_version="$ver"
+            sleep 5
+          done
