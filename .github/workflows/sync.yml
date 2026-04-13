@@ -6,46 +6,53 @@ on:
     - cron: "0 8 * * *"
   workflow_dispatch:
 
+# GITHUB_TOKEN 默认限权（cron / workflow_dispatch 触发）；
+# actions: write 才能 dispatch build.yml。
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   check-and-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Find new upstream versions
+      - name: Find oldest missing upstream version
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Get the latest 10 upstream rusty_v8 releases
-          UPSTREAM=$(gh api repos/denoland/rusty_v8/releases --jq '.[0:10] | .[].tag_name' | sed 's/^v//')
+          # 拉 denoland/rusty_v8 最近 20 个 release
+          UPSTREAM=$(gh api repos/denoland/rusty_v8/releases --jq '.[0:20] | .[].tag_name' | sed 's/^v//')
 
-          # Get our existing releases
+          # 本 repo 已 release 的版本
           OURS=$(gh api repos/${{ github.repository }}/releases --jq '.[].tag_name' | sed 's/^v//')
 
-          # Find versions we don't have yet
+          # 挑最老的一个 missing（按升序拿第一个）——每天 cron 触发一次，
+          # 一次一个版本避免 macOS runner 排队。追上 20 个版本要 20 天，
+          # 但 V8 正常每 ~6 周发一版，日追追得上。
+          # 用户需要快速补齐历史时手工 workflow_dispatch build.yml。
           MISSING=""
-          for ver in $UPSTREAM; do
+          for ver in $(echo "$UPSTREAM" | sort -V); do
             if ! echo "$OURS" | grep -qx "$ver"; then
-              MISSING="$MISSING $ver"
+              MISSING="$ver"
+              break
             fi
           done
 
-          MISSING=$(echo "$MISSING" | xargs)  # trim
           echo "missing=$MISSING" >> "$GITHUB_OUTPUT"
           if [ -n "$MISSING" ]; then
-            echo "New versions to build: $MISSING"
+            echo "Oldest missing: v$MISSING"
           else
             echo "All up to date"
           fi
 
-      - name: Trigger builds for missing versions
+      - name: Trigger build for that version
         if: steps.check.outputs.missing != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for ver in ${{ steps.check.outputs.missing }}; do
-            echo "Triggering build for v$ver..."
-            gh workflow run build.yml -f v8_version="$ver"
-            sleep 5  # avoid rate limiting
-          done
+          ver="${{ steps.check.outputs.missing }}"
+          echo "Triggering build for v$ver..."
+          gh workflow run build.yml -f v8_version="$ver"
