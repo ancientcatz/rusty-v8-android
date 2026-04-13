@@ -172,6 +172,13 @@ jobs:
           touch "$AB/pylib/results/presentation/test_results_presentation.pydeps"
           touch "$AB/test_wrapper/logdog_wrapper.pydeps"
 
+          # v8 145+ host rust toolchain 依赖 Debian bullseye sysroot
+          # （gn 里有 assert(path_exists(sysroot)) 检查）
+          SYSROOT_SCRIPT="$V8_SRC/build/linux/sysroot_scripts/install-sysroot.py"
+          if [ -f "$SYSROOT_SCRIPT" ] && [ ! -d "$V8_SRC/build/linux/debian_bullseye_amd64-sysroot" ]; then
+            python3 "$SYSROOT_SCRIPT" --arch=amd64
+          fi
+
           # v8 140+ 需要 build/rust/known-target-triples.txt（rusty_v8 精简源码时漏了）
           mkdir -p "$V8_SRC/build/rust"
           cat > "$V8_SRC/build/rust/known-target-triples.txt" << 'TRIPLES'
