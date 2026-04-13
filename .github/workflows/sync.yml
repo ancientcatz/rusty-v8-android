@@ -12,6 +12,15 @@ permissions:
   actions: write
   contents: read
 
+env:
+  # cutoff = 我们最新 release（v147.1.0）upstream published_at 的刚过这一刻。
+  # upstream 在这之后发的任何 release（新 major / minor / 老 major 的 patch）
+  # 我们都会触发 build。之前的版本我们有意跳过 / 部分追齐，不再追溯。
+  #
+  # 升级规则：发了新一批 build 后若想把 cutoff 前推，改这里的值——老的
+  # 版本就不会再被 sync 重复触发了。
+  CUTOFF: "2026-04-11T00:00:00Z"
+
 jobs:
   check-and-build:
     runs-on: ubuntu-latest
@@ -23,49 +32,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          UPSTREAM=$(gh api repos/denoland/rusty_v8/releases --jq '.[0:20] | .[].tag_name' | sed 's/^v//')
-          OURS=$(gh api repos/${{ github.repository }}/releases --jq '.[].tag_name' | sed 's/^v//')
+          # 上游按 cutoff 过滤 + 本地去重
+          NEW=$(gh api repos/denoland/rusty_v8/releases --paginate \
+            --jq ".[] | select(.published_at > \"$CUTOFF\") | .tag_name" \
+            | sed 's/^v//')
 
-          NEW=$(UPSTREAM="$UPSTREAM" OURS="$OURS" python3 <<'PY'
-          import os
+          OURS=$(gh api repos/${{ github.repository }}/releases --paginate --jq '.[].tag_name' | sed 's/^v//')
 
-          def parse(v):
-              return tuple(int(x) for x in v.split("."))
+          TRIGGER=""
+          for ver in $NEW; do
+            if ! echo "$OURS" | grep -qx "$ver"; then
+              TRIGGER="$TRIGGER $ver"
+            fi
+          done
+          TRIGGER=$(echo "$TRIGGER" | xargs)
 
-          upstream = os.environ["UPSTREAM"].split()
-          ours = os.environ["OURS"].split()
-          ours_set = set(ours)
-          ours_parsed = [parse(v) for v in ours]
-          max_overall = max(ours_parsed) if ours_parsed else (0, 0, 0)
-
-          # 规则（按 major 分桶比较）：
-          # - 同 major 我们已经有 release：触发 V iff V > max(ours in same major)
-          #   例：我们有 146.9.0，上游出 146.9.1 → 触发；上游出 146.2.1 → 不触发
-          # - 同 major 完全没 release（或全新 major）：触发 V iff V > max(ours overall)
-          #   例：我们最新 147.1.0，上游出 148.0.0 → 触发；138.0.0 不触发
-          #
-          # 老版本不追溯：我们有意跳过的 minor / patch（比如 140.0.0，因为
-          # 我们直接从 139 跳到 140.2）靠 "max in same major" 截断。
-          to_trigger = []
-          for v in upstream:
-              if v in ours_set:
-                  continue
-              vp = parse(v)
-              same_major = [o for o in ours_parsed if o[0] == vp[0]]
-              threshold = max(same_major) if same_major else max_overall
-              if vp > threshold:
-                  to_trigger.append(v)
-
-          # 升序触发——GitHub 自己排 macOS runner 队列
-          to_trigger.sort(key=parse)
-          print(" ".join(to_trigger))
-          PY
-          )
-          echo "new=$NEW" >> "$GITHUB_OUTPUT"
-          if [ -n "$NEW" ]; then
-            echo "To trigger: $NEW"
+          echo "new=$TRIGGER" >> "$GITHUB_OUTPUT"
+          if [ -n "$TRIGGER" ]; then
+            echo "To trigger (cutoff $CUTOFF): $TRIGGER"
           else
-            echo "All up to date"
+            echo "All up to date (cutoff $CUTOFF)"
           fi
 
       - name: Trigger builds for new versions
