@@ -228,15 +228,15 @@ jobs:
             ARCH_INCLUDE="x86_64-linux-android"
           fi
           BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
-          BINDGEN_ARGS="--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE"
           if [ ! -f "$V8_SRC/tools/rust_toolchain.py" ]; then
-            # v130-v139: 带 --target
+            # v130-v139: 老 Chromium libc++ 和 NDK libc++ 兼容，用 NDK 的就行；带 --target
             echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
-            echo "${BINDGEN_VAR}=$BINDGEN_ARGS --target=${{ matrix.target }}${ANDROID_API_LEVEL}" >> "$GITHUB_ENV"
+            echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}${ANDROID_API_LEVEL}" >> "$GITHUB_ENV"
           else
-            # v140+: NDK libclang + 不带 --target 的 env var
+            # v140+: Chromium 自带的新 libc++，和 NDK r26c 的旧 libc++ 不兼容
+            # （_LIBCPP_INLINE_VISIBILITY 已去除）。必须用 V8 自带的 libc++ 头
             echo "LIBCLANG_PATH=$NDK_LIB" >> "$GITHUB_ENV"
-            echo "${BINDGEN_VAR}=$BINDGEN_ARGS" >> "$GITHUB_ENV"
+            echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $V8_SRC/third_party/libc++/src/include -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE" >> "$GITHUB_ENV"
           fi
 
       - name: Prepare iOS bindgen args (v130-v139 only)
