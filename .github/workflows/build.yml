@@ -78,7 +78,7 @@ jobs:
           echo "GN=/tmp/gn/gn" >> "$GITHUB_ENV"
 
       # rusty_v8 源码缓存（按 V8 版本，跨 target 共享）
-      # 注意：actions/cache@v4 的 `!` exclusion pattern 对目录不可靠，
+      # 注意：actions/cache 的 `!` exclusion pattern 对目录不可靠（v4/v5 同），
       # 改为 restore 后显式 rm -rf third_party/rust-toolchain——V8 build.rs 会按当前 OS 重新下载
       - uses: actions/cache/restore@v4
         id: src-cache

@@ -90,7 +90,7 @@ GitHub Actions macOS runner 限制 ~3-5 个，两个 version 并跑 = 4 个 macO
 
 ## 3. 缓存策略
 
-### 3.1 actions/cache@v4 的坑
+### 3.1 actions/cache 的坑（v4/v5 通用）
 
 - `!path` exclusion pattern **对目录不可靠**。测试过 `!rusty_v8-src/third_party/rust-toolchain` 根本没排除掉，macOS 保存的 Darwin bindgen 照样进 cache，到 Linux 用就 Exec format error。正确做法：restore 后 `rm -rf`，save 前再 `rm -rf`。
 
