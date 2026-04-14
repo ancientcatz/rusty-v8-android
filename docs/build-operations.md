@@ -14,7 +14,7 @@
 
 核心文件：
 - `.github/workflows/build.yml` — 主 workflow，`workflow_dispatch` 触发
-- `.github/workflows/sync.yml` — 自动跟踪上游（目前关闭，等所有已知版本稳定再开）
+- `.github/workflows/sync.yml` — 自动跟踪上游（每天 08:00 UTC，按 `CUTOFF` 时间戳过滤后触发 build）
 
 下游的链接问题（不在这里处理）：libc++ 符号冲突、`__clear_cache` 静态链接等由消费侧 cdylib 自己处理（`--allow-multiple-definition` + version script 隐藏 libc++ 符号、build.rs 静态链接 compiler-rt builtins）。
 
