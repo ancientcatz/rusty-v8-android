@@ -91,7 +91,7 @@ jobs:
       # clean: false 保留 build.rs 往 checkout 里放的未追踪文件（android_platform 等）
       - name: Checkout rusty_v8 source
         if: steps.src-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: denoland/rusty_v8
           ref: v${{ inputs.v8_version }}
