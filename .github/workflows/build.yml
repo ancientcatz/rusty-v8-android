@@ -80,7 +80,7 @@ jobs:
       # rusty_v8 源码缓存（按 V8 版本，跨 target 共享）
       # 注意：actions/cache 的 `!` exclusion pattern 对目录不可靠（v4/v5 同），
       # 改为 restore 后显式 rm -rf third_party/rust-toolchain——V8 build.rs 会按当前 OS 重新下载
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: src-cache
         with:
           path: rusty_v8-src
@@ -132,7 +132,7 @@ jobs:
           key: ${{ matrix.target }}-${{ inputs.v8_version }}
 
       # NDK 缓存（跨 V8 版本复用，存到独立路径；只在 Android 目标用，runner 固定 Linux）
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: ndk-cache
         if: contains(matrix.target, 'android')
         with:
@@ -144,7 +144,7 @@ jobs:
       # - clang: Chromium 下载的 host clang（~640MB）
       # 用固定 key。actions/cache/save 遇到同 key 会跳过（不会覆盖），
       # 所以 save 前先 API 删除旧 cache 强制刷新。这样 partial build 也能逐次累积。
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v5
         id: v8-cache
         with:
           path: |
@@ -274,7 +274,7 @@ jobs:
           cargo build --target ${{ matrix.target }} --release
 
       # 保存 NDK 缓存（跨 V8 版本复用）
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: always() && contains(matrix.target, 'android') && steps.ndk-cache.outputs.cache-hit != 'true'
         with:
           path: /tmp/android-ndk-${{ env.NDK_VERSION }}
@@ -287,7 +287,7 @@ jobs:
         if: always() && steps.src-cache.outputs.cache-hit != 'true'
         run: rm -rf rusty_v8-src/third_party/rust-toolchain
 
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: always() && steps.src-cache.outputs.cache-hit != 'true'
         with:
           path: rusty_v8-src
@@ -303,7 +303,7 @@ jobs:
         run: |
           gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$KEY" 2>/dev/null || true
 
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: always()
         with:
           path: |
@@ -342,7 +342,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: librusty_v8-${{ matrix.lib_suffix }}
           path: |
@@ -355,7 +355,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
 
@@ -364,7 +364,7 @@ jobs:
       # make_latest 默认 "legacy"——GitHub 用 semver + 创建日期联合判断
       # （semver 优先，日期做 tiebreaker）。补老 major patch（如 146.9.1）
       # 时 147.1.0 保持 Latest 不被顶掉，不需要我们自己算。
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ inputs.v8_version }}
           name: "rusty_v8 v${{ inputs.v8_version }}"
