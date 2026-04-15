@@ -262,6 +262,33 @@ jobs:
             echo "${BINDGEN_VAR}=-isysroot $SDK --target=$CLANG_TARGET" >> "$GITHUB_ENV"
           fi
 
+      # DIAG: 查 iOS device warm cache 失效根因。cache hit 时 dump 关键状态用于对比 ios-sim。
+      - name: DIAG pre-build snapshot (iOS)
+        if: contains(matrix.target, 'apple-ios') && steps.v8-cache.outputs.cache-hit == 'true'
+        run: |
+          GN_OUT="v8-build/target/${{ matrix.target }}/release/gn_out"
+          echo "::group::args.gn (restored)"
+          cat "$GN_OUT/args.gn" 2>/dev/null || echo "NO args.gn"
+          echo "::endgroup::"
+          echo "::group::toolchain.ninja head"
+          head -60 "$GN_OUT/toolchain.ninja" 2>/dev/null || echo "NO toolchain.ninja"
+          echo "::endgroup::"
+          echo "::group::Xcode / SDK"
+          xcode-select -p
+          xcrun --sdk iphoneos --show-sdk-path 2>&1 || true
+          xcrun --sdk iphonesimulator --show-sdk-path 2>&1 || true
+          ls -la /Applications | grep -i xcode || true
+          readlink /Applications/Xcode.app 2>&1 || true
+          echo "::endgroup::"
+          echo "::group::ninja dry-run explain (first 120 lines)"
+          "$NINJA_BIN" -n -d explain -C "$GN_OUT" 2>&1 | head -120 || true
+          echo "::endgroup::"
+          echo "::group::mtimes of top-level gn_out files"
+          ls -la --full-time "$GN_OUT" 2>/dev/null | head -40 || ls -la "$GN_OUT" | head -40
+          echo "::endgroup::"
+        env:
+          NINJA_BIN: /opt/homebrew/bin/ninja
+
       - name: Build V8 from source
         env:
           V8_FROM_SOURCE: "1"
@@ -272,6 +299,18 @@ jobs:
           fi
           cd v8-build
           cargo build --target ${{ matrix.target }} --release
+
+      # DIAG: build 之后再抓一份 args.gn 对比，看 GN 是否 regen 过
+      - name: DIAG post-build snapshot (iOS)
+        if: always() && contains(matrix.target, 'apple-ios')
+        run: |
+          GN_OUT="v8-build/target/${{ matrix.target }}/release/gn_out"
+          echo "::group::args.gn (post-build)"
+          cat "$GN_OUT/args.gn" 2>/dev/null || echo "NO args.gn"
+          echo "::endgroup::"
+          echo "::group::.ninja_log tail 30"
+          tail -30 "$GN_OUT/.ninja_log" 2>/dev/null || echo "NO .ninja_log"
+          echo "::endgroup::"
 
       # 保存 NDK 缓存（跨 V8 版本复用）
       - uses: actions/cache/save@v5
