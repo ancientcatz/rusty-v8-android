@@ -158,6 +158,17 @@ jobs:
           V8_SRC="$GITHUB_WORKSPACE/rusty_v8-src"
           echo "V8_SRC=$V8_SRC" >> "$GITHUB_ENV"
 
+          # v149-v150 的 chromium_build revision 删除了 android_ndk_version
+          # 声明，但 BUILD.gn 仍然引用它。用实际使用的 NDK 版本补回；
+          # 已声明该变量的旧版和未来修复版保持不变。
+          ANDROID_CONFIG="$V8_SRC/build/config/android/config.gni"
+          if ! grep -q 'android_ndk_version' "$ANDROID_CONFIG"; then
+            sed -i \
+              "/^  android_ndk_root = \"\\/\\/third_party\\/android_toolchain\\/ndk\"$/a\\  android_ndk_version = \"$NDK_VERSION\"" \
+              "$ANDROID_CONFIG"
+            grep -Fxq "  android_ndk_version = \"$NDK_VERSION\"" "$ANDROID_CONFIG"
+          fi
+
           # NDK 存在独立路径（/tmp/android-ndk-<version>），V8 里用 symlink 引用
           NDK_CACHE_DIR="/tmp/android-ndk-${NDK_VERSION}"
           if [ ! -d "$NDK_CACHE_DIR" ]; then
