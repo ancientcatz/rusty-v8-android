@@ -11,7 +11,7 @@ on:
 jobs:
   build:
     strategy:
-      # 一个 target 失败就取消其他——反正要重跑，省时间
+      # Cancel other targets as soon as one fails — a rerun is needed anyway, so save time.
       fail-fast: true
       matrix:
         include:
@@ -21,28 +21,22 @@ jobs:
           - target: x86_64-linux-android
             os: ubuntu-latest
             lib_suffix: x86_64-linux-android
-          - target: aarch64-apple-ios
-            os: macos-latest
-            lib_suffix: aarch64-apple-ios
-          - target: aarch64-apple-ios-sim
-            os: macos-latest
-            lib_suffix: aarch64-apple-ios-sim
 
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    # v140+ 冷构建接近 120min，留足 headroom
+    # v140+ cold builds approach 120min; leave enough headroom.
     timeout-minutes: 150
 
-    # actions: write 用于 prune 老的 v8-deps cache
+    # actions: write is used to prune old v8-deps caches.
     permissions:
       actions: write
       contents: read
 
     env:
-      # 所有影响构建产物的外部版本号集中在这里。改动会通过 cache key 失效缓存。
-      NDK_VERSION: r26c
-      ANDROID_API_LEVEL: "26"
-      IOS_DEPLOYMENT_TARGET: "13.0"
+      # All external version numbers that affect build artifacts are centralized here.
+      # Changes invalidate the cache via the cache key.
+      NDK_VERSION: r29
+      ANDROID_API_LEVEL: "24"
 
     steps:
       - uses: dtolnay/rust-toolchain@stable
@@ -54,14 +48,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libclang-dev
-          # rusty_v8 v152+ 的 libc++ 需要 Clang 21.1+；用 LLVM 21 给顶层
-          # bindgen 用。V8 internal 还是用自己 --libclang-path 的 clang，不受影响
+          # rusty_v8 v152+ libc++ requires Clang 21.1+; use LLVM 21 for the top-level
+          # bindgen. V8 internal still uses its own --libclang-path clang, unaffected.
           curl -sSf https://apt.llvm.org/llvm.sh | sudo bash -s 21
           sudo apt-get install -y libclang-21-dev
-
-      - name: Install deps (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ninja
 
       - name: Download GN (Linux)
         if: runner.os == 'Linux'
@@ -70,25 +60,19 @@ jobs:
           mkdir -p /tmp/gn && cd /tmp/gn && unzip -o /tmp/gn.zip && chmod +x gn
           echo "GN=/tmp/gn/gn" >> "$GITHUB_ENV"
 
-      - name: Download GN (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          curl -sL -o /tmp/gn.zip "https://chrome-infra-packages.appspot.com/dl/gn/gn/mac-amd64/+/latest"
-          mkdir -p /tmp/gn && cd /tmp/gn && unzip -o /tmp/gn.zip && chmod +x gn
-          echo "GN=/tmp/gn/gn" >> "$GITHUB_ENV"
-
-      # rusty_v8 源码缓存（按 V8 版本，跨 target 共享）
-      # 注意：actions/cache 的 `!` exclusion pattern 对目录不可靠（v4/v5 同），
-      # 改为 restore 后显式 rm -rf third_party/rust-toolchain——V8 build.rs 会按当前 OS 重新下载
+      # rusty_v8 source cache (per V8 version, shared across targets).
+      # Note: actions/cache `!` exclusion patterns are unreliable for directories
+      # (same in v4/v5). Instead, restore then explicitly rm -rf third_party/rust-toolchain —
+      # V8 build.rs will re-download it for the current OS.
       - uses: actions/cache/restore@v5
         id: src-cache
         with:
           path: rusty_v8-src
           key: rusty-v8-src-v${{ inputs.v8_version }}
 
-      # rusty_v8 源码：用 actions/checkout（GitHub 原生，对 chromium.googlesource.com
-      # submodule 的支持比 cargo 的内置 git lib 更稳定，macOS 上尤其如此）。
-      # clean: false 保留 build.rs 往 checkout 里放的未追踪文件（android_platform 等）
+      # rusty_v8 source: use actions/checkout (GitHub-native, more stable than cargo's
+      # built-in git lib for chromium.googlesource.com submodules).
+      # clean: false preserves untracked files build.rs drops into the checkout (android_platform, etc.).
       - name: Checkout rusty_v8 source
         if: steps.src-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v5
@@ -99,15 +83,15 @@ jobs:
           path: rusty_v8-src
           clean: false
 
-      # rust-toolchain 是 OS-specific 二进制（macOS 上的 bindgen 不能在 Linux 跑）。
-      # 缓存可能是另一个 OS 上保存的，强制删除让 V8 build.rs 按当前 OS 重新下载。
-      # 无则 no-op。
+      # rust-toolchain is an OS-specific binary (macOS bindgen cannot run on Linux).
+      # The cache may have been saved on a different OS; force-delete so V8 build.rs
+      # re-downloads for the current OS. No-op if absent.
       - name: Purge OS-specific rust-toolchain
         run: rm -rf rusty_v8-src/third_party/rust-toolchain
 
       - name: Create build crate
         run: |
-          # v8-build 是一个 wrapper crate，通过 path 依赖引用本地 rusty_v8 源码
+          # v8-build is a wrapper crate that depends on the local rusty_v8 source via path.
           mkdir -p v8-build/src
           echo "fn main() {}" > v8-build/src/main.rs
           cat > v8-build/Cargo.toml << 'EOF'
@@ -120,8 +104,8 @@ jobs:
           v8 = { path = "../rusty_v8-src" }
           EOF
 
-          # 拷贝 rusty_v8 的 Cargo.lock 作为种子，避免 transitive 依赖（icu_calendar 等）
-          # 被 cargo 自动 resolve 到不兼容的新版本
+          # Copy rusty_v8's Cargo.lock as a seed so transitive deps (icu_calendar, etc.)
+          # are not auto-resolved by cargo to incompatible newer versions.
           if [ -f rusty_v8-src/Cargo.lock ]; then
             cp rusty_v8-src/Cargo.lock v8-build/Cargo.lock
           fi
@@ -131,7 +115,8 @@ jobs:
           workspaces: v8-build
           key: ${{ matrix.target }}-${{ inputs.v8_version }}
 
-      # NDK 缓存（跨 V8 版本复用，存到独立路径；只在 Android 目标用，runner 固定 Linux）
+      # NDK cache (reused across V8 versions; stored in a separate path; Android targets only,
+      # runner is always Linux).
       - uses: actions/cache/restore@v5
         id: ndk-cache
         if: contains(matrix.target, 'android')
@@ -139,18 +124,19 @@ jobs:
           path: /tmp/android-ndk-${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}
 
-      # V8 编译产物（target + V8 版本专属，host OS 隐含在 matrix.target 里）
-      # - gn_out: ninja 编译产物（几 GB，含 host 和 target 的 .o/.a）
-      # - clang: Chromium 下载的 host clang（~640MB）
-      # 用固定 key。actions/cache/save 遇到同 key 会跳过（不会覆盖），
-      # 所以 save 前先 API 删除旧 cache 强制刷新。这样 partial build 也能逐次累积。
+      # V8 build artifacts (per target + V8 version; host OS is implied by matrix.target).
+      # - gn_out: ninja build output (several GB, contains .o/.a for host and target).
+      # - clang: Chromium-downloaded host clang (~640MB).
+      # Uses a fixed key. actions/cache/save silently skips on duplicate key,
+      # so before saving we delete the old cache via API to force a refresh.
+      # This lets partial builds accumulate over successive runs.
       - uses: actions/cache/restore@v5
         id: v8-cache
         with:
           path: |
             v8-build/target/${{ matrix.target }}/release/gn_out
             v8-build/target/${{ matrix.target }}/release/clang
-          key: ${{ contains(matrix.target, 'android') && format('v8-deps-{0}-v{1}-api{2}', matrix.target, inputs.v8_version, env.ANDROID_API_LEVEL) || format('v8-deps-{0}-v{1}-ios{2}', matrix.target, inputs.v8_version, env.IOS_DEPLOYMENT_TARGET) }}
+          key: v8-deps-${{ matrix.target }}-v${{ inputs.v8_version }}-api${{ env.ANDROID_API_LEVEL }}
 
       - name: Prepare Android NDK
         if: contains(matrix.target, 'android')
@@ -158,9 +144,11 @@ jobs:
           V8_SRC="$GITHUB_WORKSPACE/rusty_v8-src"
           echo "V8_SRC=$V8_SRC" >> "$GITHUB_ENV"
 
-          # v149-v150 的 chromium_build revision 删除了 android_ndk_version
-          # 声明，但 BUILD.gn 仍然引用它。用实际使用的 NDK 版本补回；
-          # 已声明该变量的旧版和未来修复版保持不变。
+          # v149-v150's chromium_build revision removed the android_ndk_version
+          # declaration, but BUILD.gn still references it. Patch the actually-used
+          # NDK version back into the standard config.gni location; older versions
+          # that already declare the variable, and future fixed versions, are
+          # left untouched.
           ANDROID_CONFIG="$V8_SRC/build/config/android/config.gni"
           if ! grep -q 'android_ndk_version' "$ANDROID_CONFIG"; then
             sed -i \
@@ -169,7 +157,7 @@ jobs:
             grep -Fxq "  android_ndk_version = \"$NDK_VERSION\"" "$ANDROID_CONFIG"
           fi
 
-          # NDK 存在独立路径（/tmp/android-ndk-<version>），V8 里用 symlink 引用
+          # NDK is stored at a separate path (/tmp/android-ndk-<version>); V8 references it via symlink.
           NDK_CACHE_DIR="/tmp/android-ndk-${NDK_VERSION}"
           if [ ! -d "$NDK_CACHE_DIR" ]; then
             curl -L -o /tmp/ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
@@ -178,7 +166,7 @@ jobs:
             rm /tmp/ndk.zip
           fi
 
-          # Symlink 进 V8 期望的位置
+          # Symlink into the path V8 expects.
           NDK_DIR="$V8_SRC/third_party/android_ndk"
           ln -sfn "$NDK_CACHE_DIR" "$NDK_DIR"
 
@@ -195,23 +183,20 @@ jobs:
           touch "$AB/pylib/results/presentation/test_results_presentation.pydeps"
           touch "$AB/test_wrapper/logdog_wrapper.pydeps"
 
-          # v8 145+ host rust toolchain 依赖 Debian bullseye sysroot
-          # （gn 里有 assert(path_exists(sysroot)) 检查）
+          # v8 145+ host rust toolchain depends on the Debian bullseye sysroot
+          # (gn has an assert(path_exists(sysroot)) check).
           SYSROOT_SCRIPT="$V8_SRC/build/linux/sysroot_scripts/install-sysroot.py"
           if [ -f "$SYSROOT_SCRIPT" ] && [ ! -d "$V8_SRC/build/linux/debian_bullseye_amd64-sysroot" ]; then
             python3 "$SYSROOT_SCRIPT" --arch=amd64
           fi
 
-          # v8 140+ 需要 build/rust/known-target-triples.txt（rusty_v8 精简源码时漏了）
+          # v8 140+ requires build/rust/known-target-triples.txt (rusty_v8 omits it when slimming the source).
           mkdir -p "$V8_SRC/build/rust"
           cat > "$V8_SRC/build/rust/known-target-triples.txt" << 'TRIPLES'
           aarch64-linux-android
           armv7-linux-androideabi
           x86_64-linux-android
           i686-linux-android
-          aarch64-apple-ios
-          aarch64-apple-ios-sim
-          x86_64-apple-ios
           aarch64-unknown-linux-gnu
           x86_64-unknown-linux-gnu
           aarch64-apple-darwin
@@ -232,12 +217,12 @@ jobs:
           rustflags = ["-C", "link-args=-Wl,--allow-multiple-definition"]
           TOML
 
-          # bindgen clang 配置：v130 和 v140+ 处理方式不同
-          # - v130-v139：只有 rusty_v8 build.rs 顶层 bindgen，env var 带 --target
-          # - v140+：V8 internal ninja bindgen 和 rusty_v8 顶层 bindgen 都在同一 cargo build 里
-          #   env var 带 --target 会覆盖 V8 internal host 调用的 --target=x86_64-linux-gnu，
-          #   造成 -msse3 错误。所以只传 --sysroot + -isystem，不带 --target
-          #   （bindgen crate 会从 TARGET 自动推出 target；V8 internal CLI 保留自己的 --target）
+          # bindgen clang config: v130 and v140+ are handled differently.
+          # - v130-v139: only rusty_v8 build.rs top-level bindgen; env var includes --target.
+          # - v140+: both V8 internal ninja bindgen and rusty_v8 top-level bindgen run in the same cargo build.
+          #   Including --target in env would override V8 internal host call's --target=x86_64-linux-gnu,
+          #   causing -msse3 errors. So only pass --sysroot + -isystem, no --target.
+          #   (bindgen crate derives target from TARGET; V8 internal CLI keeps its own --target.)
           NDK_LIB="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/lib"
           NDK_SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           ARCH_INCLUDE="aarch64-linux-android"
@@ -246,93 +231,34 @@ jobs:
           fi
           BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
           if [ ! -f "$V8_SRC/tools/rust_toolchain.py" ]; then
-            # v130-v139: 老 Chromium libc++ 和 NDK libc++ 兼容，用 NDK 的就行；带 --target
+            # v130-v139: old Chromium libc++ is compatible with NDK libc++, use NDK's; include --target.
             echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
             echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $NDK_SYSROOT/usr/include/c++/v1 -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE --target=${{ matrix.target }}${ANDROID_API_LEVEL}" >> "$GITHUB_ENV"
           else
-            # v140+: 用 llvm-21 的 libclang 给顶层 bindgen 用；
-            # V8 自带的 libc++ 头替换 NDK 的
+            # v140+: use llvm-21's libclang for the top-level bindgen;
+            # V8's bundled libc++ headers replace the NDK's.
             echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
             echo "${BINDGEN_VAR}=--sysroot=$NDK_SYSROOT -isystem $V8_SRC/third_party/libc++/src/include -isystem $NDK_SYSROOT/usr/include -isystem $NDK_SYSROOT/usr/include/$ARCH_INCLUDE" >> "$GITHUB_ENV"
           fi
-
-      - name: Prepare iOS bindgen args (v130-v139 only)
-        if: contains(matrix.target, 'apple-ios')
-        run: |
-          V8_SRC="$GITHUB_WORKSPACE/rusty_v8-src"
-          # 和 Android 同样的逻辑：v140+ 不需要，v130-v139 需要
-          if [ ! -f "$V8_SRC/tools/rust_toolchain.py" ]; then
-            if [ "${{ matrix.target }}" = "aarch64-apple-ios-sim" ]; then
-              SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
-              CLANG_TARGET="arm64-apple-ios${IOS_DEPLOYMENT_TARGET}-simulator"
-            else
-              SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-              CLANG_TARGET="arm64-apple-ios${IOS_DEPLOYMENT_TARGET}"
-            fi
-            BINDGEN_VAR="BINDGEN_EXTRA_CLANG_ARGS_$(echo '${{ matrix.target }}' | tr '-' '_')"
-            echo "${BINDGEN_VAR}=-isysroot $SDK --target=$CLANG_TARGET" >> "$GITHUB_ENV"
-          fi
-
-      # DIAG: 查 iOS device warm cache 失效根因。cache hit 时 dump 关键状态用于对比 ios-sim。
-      - name: DIAG pre-build snapshot (iOS)
-        if: contains(matrix.target, 'apple-ios') && steps.v8-cache.outputs.cache-hit == 'true'
-        run: |
-          GN_OUT="v8-build/target/${{ matrix.target }}/release/gn_out"
-          echo "::group::args.gn (restored)"
-          cat "$GN_OUT/args.gn" 2>/dev/null || echo "NO args.gn"
-          echo "::endgroup::"
-          echo "::group::toolchain.ninja head"
-          head -60 "$GN_OUT/toolchain.ninja" 2>/dev/null || echo "NO toolchain.ninja"
-          echo "::endgroup::"
-          echo "::group::Xcode / SDK"
-          xcode-select -p
-          xcrun --sdk iphoneos --show-sdk-path 2>&1 || true
-          xcrun --sdk iphonesimulator --show-sdk-path 2>&1 || true
-          ls -la /Applications | grep -i xcode || true
-          readlink /Applications/Xcode.app 2>&1 || true
-          echo "::endgroup::"
-          echo "::group::ninja dry-run explain (first 120 lines)"
-          "$NINJA_BIN" -n -d explain -C "$GN_OUT" 2>&1 | head -120 || true
-          echo "::endgroup::"
-          echo "::group::mtimes of top-level gn_out files"
-          ls -la --full-time "$GN_OUT" 2>/dev/null | head -40 || ls -la "$GN_OUT" | head -40
-          echo "::endgroup::"
-        env:
-          NINJA_BIN: /opt/homebrew/bin/ninja
 
       - name: Build V8 from source
         env:
           V8_FROM_SOURCE: "1"
           NINJA: /usr/bin/ninja
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            export NINJA=$(which ninja)
-          fi
           cd v8-build
           cargo build --target ${{ matrix.target }} --release
 
-      # DIAG: build 之后再抓一份 args.gn 对比，看 GN 是否 regen 过
-      - name: DIAG post-build snapshot (iOS)
-        if: always() && contains(matrix.target, 'apple-ios')
-        run: |
-          GN_OUT="v8-build/target/${{ matrix.target }}/release/gn_out"
-          echo "::group::args.gn (post-build)"
-          cat "$GN_OUT/args.gn" 2>/dev/null || echo "NO args.gn"
-          echo "::endgroup::"
-          echo "::group::.ninja_log tail 30"
-          tail -30 "$GN_OUT/.ninja_log" 2>/dev/null || echo "NO .ninja_log"
-          echo "::endgroup::"
-
-      # 保存 NDK 缓存（跨 V8 版本复用）
+      # Save NDK cache (reused across V8 versions).
       - uses: actions/cache/save@v5
         if: always() && contains(matrix.target, 'android') && steps.ndk-cache.outputs.cache-hit != 'true'
         with:
           path: /tmp/android-ndk-${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}
 
-      # 保存 rusty_v8-src（save 抓整个目录，包括 build.rs 放进来的
-      # android_platform/catapult/build/linux 等未追踪文件）
-      # save 前删除 third_party/rust-toolchain——OS-specific 二进制不能跨 OS 共享
+      # Save rusty_v8-src (save captures the entire directory, including untracked files
+      # dropped in by build.rs such as android_platform / catapult / build / linux).
+      # Remove third_party/rust-toolchain before save — OS-specific binaries cannot be shared across OSes.
       - name: Remove rust-toolchain before save
         if: always() && steps.src-cache.outputs.cache-hit != 'true'
         run: rm -rf rusty_v8-src/third_party/rust-toolchain
@@ -343,13 +269,14 @@ jobs:
           path: rusty_v8-src
           key: rusty-v8-src-v${{ inputs.v8_version }}
 
-      # 保存 V8 编译产物——每次 run 都强制刷新：先 API 删旧 cache（actions/cache/save
-      # 遇到同 key 会静默跳过），再 save 新的。这样 partial build 能逐次累积。
+      # Save V8 build artifacts — force refresh on every run: first delete old cache via API
+      # (actions/cache/save silently skips on duplicate key), then save the new one.
+      # This lets partial builds accumulate over successive runs.
       - name: Delete stale v8-deps cache
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          KEY: ${{ contains(matrix.target, 'android') && format('v8-deps-{0}-v{1}-api{2}', matrix.target, inputs.v8_version, env.ANDROID_API_LEVEL) || format('v8-deps-{0}-v{1}-ios{2}', matrix.target, inputs.v8_version, env.IOS_DEPLOYMENT_TARGET) }}
+          KEY: v8-deps-${{ matrix.target }}-v${{ inputs.v8_version }}-api${{ env.ANDROID_API_LEVEL }}
         run: |
           gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$KEY" 2>/dev/null || true
 
@@ -359,7 +286,7 @@ jobs:
           path: |
             v8-build/target/${{ matrix.target }}/release/gn_out
             v8-build/target/${{ matrix.target }}/release/clang
-          key: ${{ contains(matrix.target, 'android') && format('v8-deps-{0}-v{1}-api{2}', matrix.target, inputs.v8_version, env.ANDROID_API_LEVEL) || format('v8-deps-{0}-v{1}-ios{2}', matrix.target, inputs.v8_version, env.IOS_DEPLOYMENT_TARGET) }}
+          key: v8-deps-${{ matrix.target }}-v${{ inputs.v8_version }}-api${{ env.ANDROID_API_LEVEL }}
 
       - name: Extract artifacts
         run: |
@@ -411,15 +338,15 @@ jobs:
 
       - run: ls -lh *.a.gz *.rs 2>/dev/null || true
 
-      # make_latest 默认 "legacy"——GitHub 用 semver + 创建日期联合判断
-      # （semver 优先，日期做 tiebreaker）。补老 major patch（如 146.9.1）
-      # 时 147.1.0 保持 Latest 不被顶掉，不需要我们自己算。
+      # make_latest defaults to "legacy" — GitHub uses semver + creation date jointly
+      # (semver first, date as tiebreaker). When backfilling an old major patch (e.g. 146.9.1),
+      # 147.1.0 stays Latest and is not displaced — no need to compute this ourselves.
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ inputs.v8_version }}
           name: "rusty_v8 v${{ inputs.v8_version }}"
           body: |
-            Prebuilt `librusty_v8.a` for mobile targets, compiled from [rusty_v8 v${{ inputs.v8_version }}](https://github.com/denoland/rusty_v8/releases/tag/v${{ inputs.v8_version }}).
+            Prebuilt `librusty_v8.a` for Android targets, compiled from [rusty_v8 v${{ inputs.v8_version }}](https://github.com/denoland/rusty_v8/releases/tag/v${{ inputs.v8_version }}).
 
             Usage:
             ```bash
